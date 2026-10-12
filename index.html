@@ -412,6 +412,71 @@
             return titles[(n % 100 > 4 && n % 100 < 20) ? 2 : [2, 0, 1, 1, 1, 2][(n % 10 < 5) ? n % 10 : 5]];
         }
 
+        // Парсинг чистого XML текста в массив элементов
+        function parseXmlToItems(xmlText) {
+            const parser = new DOMParser();
+            const xml = parser.parseFromString(xmlText, "text/xml");
+            const entries = xml.querySelectorAll("entry");
+            const items = [];
+
+            entries.forEach(entry => {
+                const title = entry.querySelector("title")?.textContent || "Видео";
+                const published = entry.querySelector("published")?.textContent || "";
+                const linkEl = entry.querySelector("link");
+                const videoUrl = linkEl ? linkEl.getAttribute("href") : "";
+                const match = videoUrl.match(/[?&]v=([^&]+)/);
+                const videoId = match ? match[1] : "";
+
+                if (videoId) {
+                    items.push({ title, published, videoUrl, videoId });
+                }
+            });
+
+            return items;
+        }
+
+        // Автоматический ротатор источников с фолбеком
+        async function loadFeedData() {
+            const rssUrl = `https://www.youtube.com/feeds/videos.xml?channel_id=${CHANNEL_ID}`;
+            
+            const sources = [
+                // Источник 1: Invidious API
+                async () => {
+                    const res = await fetch(`https://inv.tux.pizza/api/v1/channels/${CHANNEL_ID}/videos`);
+                    const data = await res.json();
+                    return data.slice(0, 2).map(v => ({
+                        title: v.title,
+                        published: new Date(v.published * 1000).toISOString(),
+                        videoUrl: `https://www.youtube.com/watch?v=${v.videoId}`,
+                        videoId: v.videoId
+                    }));
+                },
+                // Источник 2: CORSProxy
+                async () => {
+                    const res = await fetch(`https://corsproxy.io/?${encodeURIComponent(rssUrl)}`);
+                    const xmlText = await res.text();
+                    return parseXmlToItems(xmlText);
+                },
+                // Источник 3: AllOrigins
+                async () => {
+                    const res = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(rssUrl)}`);
+                    const xmlText = await res.text();
+                    return parseXmlToItems(xmlText);
+                }
+            ];
+
+            for (const getSource of sources) {
+                try {
+                    const items = await getSource();
+                    if (items && items.length > 0) return items;
+                } catch (e) {
+                    console.warn("Источник отломился, пробуем следующий...", e);
+                }
+            }
+
+            throw new Error("Все источники недоступны");
+        }
+
         async function fetchVideos() {
             const main = document.getElementById('app');
             const isOnline = await checkYouTube();
@@ -429,49 +494,26 @@
 
             document.getElementById('loadingStatus').innerText = 'Загрузка свежих видео...';
 
-            const targetRss = `https://www.youtube.com/feeds/videos.xml?channel_id=${CHANNEL_ID}`;
-            // Используем /raw endpoint у allorigins, который возвращает чистый XML текст без JSON оберток
-            const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(targetRss)}`;
-
             try {
-                const response = await fetch(proxyUrl);
-                const textData = await response.text();
-                
-                const parser = new DOMParser();
-                const xml = parser.parseFromString(textData, "text/xml");
-                const entries = xml.querySelectorAll("entry");
-
-                if (!entries || entries.length === 0) {
-                    throw new Error("Пустой список RSS");
-                }
-
+                const items = await loadFeedData();
                 let html = '';
-                const limit = Math.min(entries.length, 2);
+                const limit = Math.min(items.length, 2);
 
                 for (let i = 0; i < limit; i++) {
-                    const entry = entries[i];
-                    const title = entry.querySelector("title")?.textContent || "Видео";
-                    const published = entry.querySelector("published")?.textContent || "";
-                    
-                    // Надежное извлечение ссылки и ID видео (обход namespace проблемы с yt:videoId)
-                    const linkEl = entry.querySelector("link");
-                    const videoUrl = linkEl ? linkEl.getAttribute("href") : "";
-                    const match = videoUrl.match(/[?&]v=([^&]+)/);
-                    const videoId = match ? match[1] : "";
-                    
-                    const thumbUrl = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
-                    const relTime = timeAgo(published);
-                    const isFresh = (new Date() - new Date(published)) < (12 * 3600 * 1000);
+                    const item = items[i];
+                    const thumbUrl = `https://i.ytimg.com/vi/${item.videoId}/hqdefault.jpg`;
+                    const relTime = timeAgo(item.published);
+                    const isFresh = (new Date() - new Date(item.published)) < (12 * 3600 * 1000);
 
                     html += `
-                        <a href="${videoUrl}" target="_blank" rel="noopener" class="video-card">
+                        <a href="${item.videoUrl}" target="_blank" rel="noopener" class="video-card">
                             <div class="thumb-wrapper">
-                                <img src="${thumbUrl}" alt="${title}" loading="lazy">
+                                <img src="${thumbUrl}" alt="${item.title}" loading="lazy">
                                 <div class="play-btn-overlay"></div>
                                 ${isFresh ? '<div class="badge-fresh">Свежее</div>' : ''}
                             </div>
                             <div class="video-details">
-                                <h2 class="video-title">${title}</h2>
+                                <h2 class="video-title">${item.title}</h2>
                                 <div class="video-meta">
                                     <span>🕒</span>
                                     <span>${relTime}</span>
@@ -488,7 +530,7 @@
                 main.innerHTML = `
                     <div class="error-card">
                         <h3>Ошибка загрузки ленты</h3>
-                        <p style="color: var(--text-sub)">Не удалось обработать список видео.</p>
+                        <p style="color: var(--text-sub)">Не удалось получить список видео. Проверьте соединение.</p>
                         <button class="btn-reload" onclick="fetchVideos()">Попробовать снова</button>
                     </div>
                 `;
