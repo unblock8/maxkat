@@ -429,74 +429,71 @@
 
             document.getElementById('loadingStatus').innerText = 'Загрузка свежих видео...';
 
-            const script = document.createElement('script');
-            const callbackName = 'ytFeedCallback_' + Date.now();
+            // Имитируем заход через открытые общедоступные зеркала YouTube (без ключей и регистрации)
+            const instances = [
+                `https://invidious.privacyredirect.com/api/v1/channels/${CHANNEL_ID}/videos`,
+                `https://inv.nadeko.net/api/v1/channels/${CHANNEL_ID}/videos`,
+                `https://vid.priv.au/api/v1/channels/${CHANNEL_ID}/videos`
+            ];
 
-            window[callbackName] = function(data) {
-                delete window[callbackName];
-                if (document.body.contains(script)) {
-                    document.body.removeChild(script);
-                }
+            let items = null;
 
+            for (const url of instances) {
                 try {
-                    if (!data || !data.feed || !data.feed.entry) {
-                        throw new Error("Нет данных");
+                    const res = await fetch(url);
+                    if (res.ok) {
+                        const data = await res.json();
+                        if (Array.isArray(data) && data.length > 0) {
+                            items = data.slice(0, 2).map(v => ({
+                                title: v.title,
+                                published: new Date(v.published * 1000).toISOString(),
+                                videoUrl: `https://www.youtube.com/watch?v=${v.videoId}`,
+                                videoId: v.videoId
+                            }));
+                            break;
+                        }
                     }
-
-                    const entries = data.feed.entry;
-                    let html = '';
-                    const limit = Math.min(entries.length, 2);
-
-                    for (let i = 0; i < limit; i++) {
-                        const entry = entries[i];
-                        const title = entry.title.$t;
-                        const published = entry.published.$t;
-                        
-                        const videoUrl = entry.link.find(l => l.rel === 'alternate').href;
-                        const match = videoUrl.match(/[?&]v=([^&]+)/);
-                        const videoId = match ? match[1] : "";
-                        
-                        const thumbUrl = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
-                        const relTime = timeAgo(published);
-                        const isFresh = (new Date() - new Date(published)) < (12 * 3600 * 1000);
-
-                        html += `
-                            <a href="${videoUrl}" target="_blank" rel="noopener" class="video-card">
-                                <div class="thumb-wrapper">
-                                    <img src="${thumbUrl}" alt="${title}" loading="lazy">
-                                    <div class="play-btn-overlay"></div>
-                                    ${isFresh ? '<div class="badge-fresh">Свежее</div>' : ''}
-                                </div>
-                                <div class="video-details">
-                                    <h2 class="video-title">${title}</h2>
-                                    <div class="video-meta">
-                                        <span>🕒</span>
-                                        <span>${relTime}</span>
-                                    </div>
-                                </div>
-                            </a>
-                        `;
-                    }
-
-                    main.innerHTML = html;
-                } catch (err) {
-                    showError();
+                } catch (e) {
+                    console.warn("Зеркало недоступно, пробуем следующее...");
                 }
-            };
+            }
 
-            function showError() {
+            if (!items || items.length === 0) {
                 main.innerHTML = `
                     <div class="error-card">
-                        <h3>Ошибка загрузки ленты</h3>
-                        <p style="color: var(--text-sub)">Не удалось получить список видео. Проверьте соединение/VPN.</p>
-                        <button class="btn-reload" onclick="fetchVideos()">Попробовать снова</button>
+                        <h3>Не удалось загрузить ленту</h3>
+                        <p style="color: var(--text-sub)">Все зеркала временно заняты. Попробуйте обновить страницу.</p>
+                        <button class="btn-reload" onclick="fetchVideos()">Повторить попытку</button>
                     </div>
+                `;
+                return;
+            }
+
+            let html = '';
+            for (const item of items) {
+                const thumbUrl = `https://i.ytimg.com/vi/${item.videoId}/hqdefault.jpg`;
+                const relTime = timeAgo(item.published);
+                const isFresh = (new Date() - new Date(item.published)) < (12 * 3600 * 1000);
+
+                html += `
+                    <a href="${item.videoUrl}" target="_blank" rel="noopener" class="video-card">
+                        <div class="thumb-wrapper">
+                            <img src="${thumbUrl}" alt="${item.title}" loading="lazy">
+                            <div class="play-btn-overlay"></div>
+                            ${isFresh ? '<div class="badge-fresh">Свежее</div>' : ''}
+                        </div>
+                        <div class="video-details">
+                            <h2 class="video-title">${item.title}</h2>
+                            <div class="video-meta">
+                                <span>🕒</span>
+                                <span>${relTime}</span>
+                            </div>
+                        </div>
+                    </a>
                 `;
             }
 
-            script.onerror = showError;
-            script.src = `https://www.youtube.com/feeds/videos.xml?channel_id=${CHANNEL_ID}&alt=json-in-script&callback=${callbackName}`;
-            document.body.appendChild(script);
+            main.innerHTML = html;
         }
 
         fetchVideos();
